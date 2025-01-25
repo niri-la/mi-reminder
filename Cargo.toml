@@ -2,5 +2,12 @@
 name = "mi-reminder"
 version = "0.1.0"
 edition = "2021"
+description = "A reminder bot for Misskey"
 
 [dependencies]
+futures = "0.3.31"
+reqwest = { version = "0.12.12", default-features = false }
+sea-orm = { version = "1.1.4", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+tokio = { version = "1.43.0", features = ["full"] }
+tokio-stream = "0.1.17"
+tokio-tungstenite = { version = "0.26.1", features = ["rustls-tls-native-roots"] }
