@@ -3,7 +3,7 @@ use reqwest::header;
 use sea_orm::*;
 use std::{
     env::var,
-    sync::LazyLock,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{self, Instant};
@@ -12,22 +12,29 @@ use tokio_tungstenite::{
     connect_async, tungstenite::client::IntoClientRequest, tungstenite::protocol::Message,
 };
 
-// Static Variables
-static MISSKEY_HOST: LazyLock<String> = LazyLock::new(|| {
-    var("MISSKEY_HOST").expect("Environment variable `MISSKEY_HOST` was not found!")
-});
-static MISSKEY_TOKEN: LazyLock<String> = LazyLock::new(|| {
-    var("MISSKEY_TOKEN").expect("Environment variable `MISSKEY_TOKEN` was not found!")
-});
-static DB_PATH: LazyLock<String> =
-    LazyLock::new(|| var("DB_PATH").expect("Environment variable `DB_PATH` was not found!"));
+struct Config {
+    misskey_host: String,
+    misskey_token: String,
+    db_path: String,
+}
+
+fn get_environment_variable(key: &str) -> String {
+    var(key).unwrap_or_else(|_| panic!("Environment variable `{}` was not found!", key))
+}
 
 // TODO: 例外処理
 #[tokio::main]
 async fn main() {
+    let config = Arc::new(Config {
+        misskey_host: get_environment_variable("MISSKEY_HOST"),
+        misskey_token: get_environment_variable("MISSKEY_TOKEN"),
+        db_path: get_environment_variable("DB_PATH"),
+    });
+
     // Connect to DB
-    let db_path = format!("sqlite://{}?mode=rwc", &*DB_PATH);
-    let db: DatabaseConnection = Database::connect(db_path).await.unwrap();
+    let db: DatabaseConnection = Database::connect(format!("sqlite://{}?mode=rwc", config.db_path))
+        .await
+        .unwrap();
 
     // Prepare HTTP/HTTPS Client
     let request_client = reqwest::Client::builder()
@@ -42,15 +49,19 @@ async fn main() {
 
     // Run Sub Thread
     let reminder_handler = std::thread::spawn({
+        let config = config.clone();
         let db = db.clone();
         let request_client = request_client.clone();
-        || reminder(db, request_client)
+        || reminder(config, db, request_client)
     });
 
     // Connect to misskey with websocket
-    let ws_request = format!("wss://{}/streaming?i={}", &*MISSKEY_HOST, &*MISSKEY_TOKEN)
-        .into_client_request()
-        .unwrap();
+    let ws_request = format!(
+        "wss://{}/streaming?i={}",
+        config.misskey_host, config.misskey_token
+    )
+    .into_client_request()
+    .unwrap();
     let (mut ws_socket, _) = connect_async(ws_request)
         .await
         .expect("Failed to connect Websocket!");
@@ -80,7 +91,10 @@ async fn main() {
             serde_json::from_str(responce.to_text().unwrap_or_default()).unwrap();
 
         if responce["type"] == "channel" && responce["body"]["type"] == "mention" {
-            tokio::task::spawn(process_note(responce["body"]["body"].clone()));
+            tokio::task::spawn(process_note(
+                config.clone(),
+                responce["body"]["body"].clone(),
+            ));
         }
     }
 
@@ -88,18 +102,18 @@ async fn main() {
     ws_socket.close(None).await.unwrap();
 }
 
-async fn process_note(body: serde_json::Value) {
+async fn process_note(config: Arc<Config>, body: serde_json::Value) {
     println!("{}", body); // TODO: 内容
                           // TODO: matchで書いているが、ifにして条件をより具体的に記述した方が良さそう
     match body["visibility"].as_str() {
-        Some("public") => try_register(body).await,
-        Some("home") => try_register(body).await,
+        Some("public") => try_register(&config, body).await,
+        Some("home") => try_register(&config, body).await,
         _ => (),
     }
 }
 
 // Register or Reject remind
-async fn try_register(body: serde_json::Value) {
+async fn try_register(config: &Arc<Config>, body: serde_json::Value) {
     // TODO
     println!("remind処理対象です");
 }
@@ -110,8 +124,8 @@ async fn remove_remind() {
 }
 
 #[tokio::main]
-async fn reminder(db: DatabaseConnection, request_client: reqwest::Client) {
-    let request_url = format!("https://{}/api/notes/create", &*MISSKEY_HOST);
+async fn reminder(config: Arc<Config>, db: DatabaseConnection, request_client: reqwest::Client) {
+    let request_url = format!("https://{}/api/notes/create", config.misskey_host);
 
     // Wait until initial process timing
     let until_start = match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -127,11 +141,12 @@ async fn reminder(db: DatabaseConnection, request_client: reqwest::Client) {
     loop {
         // If this is called for the first time, it is completed immediately.
         interval.tick().await;
-        send_remind(&db, &request_client, &request_url).await;
+        send_remind(&config, &db, &request_client, &request_url).await;
     }
 }
 
 async fn send_remind(
+    config: &Arc<Config>,
     db: &DatabaseConnection,
     request_client: &reqwest::Client,
     request_url: &String,
@@ -146,7 +161,7 @@ async fn send_remind(
                 header::CONTENT_TYPE,
                 header::HeaderValue::from_static("application/json"),
             )
-            .body(format!(r#"{{"text": "test投稿", "reactionAcceptance": "likeOnly", "visibility": "home", "i": "{}"}}"#, &*MISSKEY_TOKEN))
+            .body(format!(r#"{{"text": "test投稿", "reactionAcceptance": "likeOnly", "visibility": "home", "i": "{}"}}"#, config.misskey_token))
             .send()
             .await
             .expect("Failed to create note!");
