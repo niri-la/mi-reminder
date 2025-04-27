@@ -113,7 +113,7 @@ async fn process_note(config: Arc<Config>, body: serde_json::Value) {
 }
 
 // Register or Reject remind
-async fn try_register(config: &Arc<Config>, body: serde_json::Value) {
+async fn try_register(config: &Config, body: serde_json::Value) {
     // TODO
     println!("remind処理対象です");
 }
